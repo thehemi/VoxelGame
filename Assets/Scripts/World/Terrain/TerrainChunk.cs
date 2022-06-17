@@ -9,7 +9,6 @@ using System.ComponentModel;
 
 public class TerrainChunk : MonoBehaviour
 {
-    WaitCallback callback;
     //A 3D chunk index
     public Vector3Int chunkCoord;
     //A 3D chunk position in world space
@@ -17,6 +16,7 @@ public class TerrainChunk : MonoBehaviour
     //Chunk world scale
     public Vector3Int chunkSize;
 
+    public Material terrainMat;
     //Mesh components
     MeshRenderer meshRenderer;
     MeshFilter meshFilter;
@@ -30,6 +30,22 @@ public class TerrainChunk : MonoBehaviour
 
     Mesh chunkMesh;
 
+    static List<Vector3> vertices = new List<Vector3>();
+    static List<int> triangles = new List<int>();
+    static List<Color> colors = new List<Color>();
+    static Dictionary<Vector3, List<Vector3Int>> faces = new Dictionary<Vector3, List<Vector3Int>>();
+    public static void InitFaces()
+    {
+        foreach (Vector3 dir in CustomMath.directions)
+        {
+            List<Vector3Int> posList = new List<Vector3Int>();
+            faces.Add(dir, posList);
+        }
+    }
+    public static void AddFace(Vector3 dir, Vector3Int pos)
+    {
+        faces[dir].Add(pos);
+    }
     void Awake()
     {
         //Get the mesh components from the chunk game object
@@ -39,7 +55,7 @@ public class TerrainChunk : MonoBehaviour
     }
     public void InstantiateChunkData(int byteArrayLength, NoiseSettings settings)
     {
-        chunkData = new ChunkData(Vector3.zero, Vector3Int.zero, byteArrayLength, null);
+        chunkData = new ChunkData(Vector3Int.zero, Vector3.zero, Vector3Int.zero, byteArrayLength, null);
         chunkData.settings = settings;
         chunkMesh = new Mesh();
     }
@@ -89,25 +105,18 @@ public class TerrainChunk : MonoBehaviour
             return outByte;
         }
     }
-    /// <summary>
-    /// Check to see if any of this chunks worker threads have finished their tasks.
-    /// If they have, complete them and dispose of the thread
-    /// </summary>
-    public void WaitForByteArray()
+    public void FinishMesh()
     {
-        if(!generated && chunkData.jobComplete)
-        {
-            chunkMesh.Clear();
-            chunkMesh.vertices = chunkData.vertexArray;
-            chunkMesh.triangles = chunkData.triangleArray;
-            chunkMesh.colors = chunkData.colorArray;
+        chunkMesh.Clear();
+        chunkMesh.vertices = chunkData.vertexArray;
+        chunkMesh.triangles = chunkData.triangleArray;
+        chunkMesh.colors = chunkData.colorArray;
 
-            chunkMesh.RecalculateNormals();
-            UpdateMesh(chunkMesh);
+        chunkMesh.RecalculateNormals();
+        UpdateMesh(chunkMesh);
 
-            generated = true;
-            this.gameObject.SetActive(true);
-        }
+        generated = true;
+        this.gameObject.SetActive(true);
     }
     /// <summary>
     /// Clear the chunk of all current data, cancel any running threads, set chunk to be ungenerated
@@ -135,6 +144,7 @@ public class TerrainChunk : MonoBehaviour
         this.chunkCoord = chunkCoord;
         this.chunkWorldPos = chunkWorldPos;
 
+        chunkData.chunkCoord = chunkCoord;
         chunkData.chunkWorldPos = chunkWorldPos;
         chunkData.chunkSize = chunkSize;
         chunkData.savedData = savedData;
@@ -144,10 +154,20 @@ public class TerrainChunk : MonoBehaviour
         FullGenerate(chunkData);
     }
     public static void FullGenerate(object state)
-    {   
+    {
+        vertices.Clear();
+        triangles.Clear();
+        colors.Clear();
+        foreach (Vector3 dir in CustomMath.directions)
+        {
+            faces[dir].Clear();
+        }
         ChunkData chunkData = (ChunkData)state;
         GenerateByteArray(chunkData);
+
+        if (chunkData.empty) { return; }
         GenerateMeshGreedyFace(chunkData);
+        TerrainHandler.meshQueue.Enqueue(chunkData.chunkCoord);
     }
     /// <summary>
     /// Generate the byte values for a chunk.
@@ -158,7 +178,11 @@ public class TerrainChunk : MonoBehaviour
     {
         //Get the chunk data from the worker argument passed on the method call.
         ChunkData chunkData = (ChunkData)state;
-
+        chunkData.LOD = 1;
+        if (Mathf.Abs(chunkData.chunkCoord.x) >= 4 && Mathf.Abs(chunkData.chunkCoord.z) >= 4)
+        {
+            chunkData.LOD = 3;
+        }
         //Loop over all local positions (in the x,y, and z directions)
         Vector3 pos = Vector3.zero;
         int blockCount = chunkData.byteArr.Length;
@@ -168,32 +192,9 @@ public class TerrainChunk : MonoBehaviour
             Vector3 pos = GetPositionFromIndex(index, chunkData.chunkSize);
             //Generate the byte value at the world space position of the block, with current noise settings
             //Set the byte value at the index, to the generated value
-            byte val = GenerateBlock(chunkData.chunkWorldPos + pos);
+            byte val = GenerateBlock((chunkData.chunkWorldPos + pos) / chunkData.LOD);
             chunkData.SetByteValue(index, val);
         });
-    }
-    static System.Random rand = new System.Random();
-    public static void AddCube(Vector3 startPos, Vector3 endPos, List<Vector3> vertices, List<int> triangles, List<Color> colors)
-    {
-        float width = endPos.x - startPos.x;
-        float height = endPos.y - startPos.y;
-        float length = endPos.z - startPos.z;
-        
-        AddQuad(vertices, triangles, startPos, Vector3.right, width, Vector3.up, height, Vector3.back);
-        AddQuad(vertices, triangles, startPos + new Vector3(0,height,0), Vector3.right, width, Vector3.forward, length, Vector3.up);
-        AddQuad(vertices, triangles, startPos, Vector3.forward, length, Vector3.up, height, Vector3.left);
-
-        AddQuad(vertices, triangles, startPos + new Vector3(0,0,length), Vector3.right, width, Vector3.up, height, Vector3.forward);
-        AddQuad(vertices, triangles, startPos, Vector3.right, width, Vector3.forward, length, Vector3.down);
-        AddQuad(vertices, triangles, startPos + new Vector3(width,0,0), Vector3.forward, length, Vector3.up, height, Vector3.right);
-
-
-        Color vColor = new Color((float)rand.NextDouble(), (float)rand.NextDouble(),(float) rand.NextDouble(), 1);
-        int vertexCount = 24;
-        for(int i = 0; i < vertexCount; i++)
-        {
-            colors.Add(vColor);
-        }
     }
     public static void GenerateMeshGreedyFace(object state)
     {
@@ -203,7 +204,7 @@ public class TerrainChunk : MonoBehaviour
         {
             HashSet<Vector3Int> visited = new HashSet<Vector3Int>();
 
-            List<Vector3Int> facesList = chunkData.faces[dir];
+            List<Vector3Int> facesList = faces[dir];
             Vector3Int[] wlDir = CustomMath.intDirectionDictionary[dir];
             foreach(Vector3Int intPos in facesList)
             {
@@ -262,18 +263,27 @@ public class TerrainChunk : MonoBehaviour
                     }
                     checkPos = intPos + wlDir[1] * length;
                 }
-                AddQuad(chunkData.vertices, chunkData.triangles, intPos, wlDir[0], width, wlDir[1], length, dir);
-                Color vColor = new Color((float)rand.NextDouble(), (float)rand.NextDouble(), (float)rand.NextDouble(), 1);
-                for(int i = 0; i < 4; i++)
+                AddQuad(vertices, triangles, intPos, wlDir[0], width, wlDir[1], length, dir);
+                if(chunkData.LOD != 1)
                 {
-                    chunkData.colors.Add(vColor);
+                    for (int c = 0; c < 4; c++)
+                    {
+                        colors.Add(Color.red);
+                    }
+                }
+                else
+                {
+                    for(int c = 0; c < 4; c++)
+                    {
+                        colors.Add(Color.green);
+                    }
                 }
                 visited.Add(intPos);
             }
         }
-        chunkData.vertexArray = chunkData.vertices.ToArray();
-        chunkData.triangleArray = chunkData.triangles.ToArray();
-        chunkData.colorArray = chunkData.colors.ToArray();
+        chunkData.vertexArray = vertices.ToArray();
+        chunkData.triangleArray = triangles.ToArray();
+        chunkData.colorArray = colors.ToArray();
         chunkData.jobComplete = true;
     }
     public static bool WithinChunkBounds(Vector3 pos, Vector3 chunkSize)
@@ -284,6 +294,7 @@ public class TerrainChunk : MonoBehaviour
     {
         return pos.x >= -1 && pos.x < chunkSize.x+1 && pos.y >= -1 && pos.y < chunkSize.y+1 && pos.z >= -1 && pos.z < chunkSize.z+1;
     }
+
     /// <summary>
     /// Generate the chunk mesh from the generate byte values
     /// </summary>
@@ -330,7 +341,7 @@ public class TerrainChunk : MonoBehaviour
                                 Vector3Int[] wlDir = CustomMath.intDirectionDictionary[dir];
                                 //Add a quad to the current vertices and triangles of the chunk, with width and length relative to the quad normal
                                 //AddQuad(chunkData.vertices, chunkData.triangles, pos + wlDir[2], wlDir[0], wlDir[1], dir);
-                                chunkData.AddFace(dir, intPos + wlDir[2]);
+                                AddFace(dir, intPos + wlDir[2]);
                             }
                         }
                         //Else if the block is outside the current chunk bounds quickly generate the value the block would have in the next chunk
@@ -342,15 +353,12 @@ public class TerrainChunk : MonoBehaviour
                             Vector3Int[] wlDir = CustomMath.intDirectionDictionary[dir];
                             //Add a quad to the current vertices and triangles of the chunk, with width and length relative to the quad normal
                             //AddQuad(chunkData.vertices, chunkData.triangles, pos + wlDir[2], wlDir[0], wlDir[1], dir);
-                            chunkData.AddFace(dir, intPos + wlDir[2]);
+                            AddFace(dir, intPos + wlDir[2]);
                         }
                     }
                 }
             }
         }
-        /*chunkData.vertexArray = chunkData.vertices.ToArray();
-        chunkData.triangleArray = chunkData.triangles.ToArray();
-        chunkData.jobComplete = true;*/
     }
     /// <summary>
     /// Set the chunk mesh filter and collider to use the given mesh
@@ -566,17 +574,14 @@ public class TerrainChunk : MonoBehaviour
     //(Mesh vertices, triangles, arrays, world position, noise settings, saved data)
     public class ChunkData
     {
-        //List of vertex positions for the chunk mesh
-        public List<Vector3> vertices = new List<Vector3>();
-        //List of triangle indices for the chunk mesh
-        public List<int> triangles = new List<int>();
-        public List<Color> colors = new List<Color>();
-        public Dictionary<Vector3, List<Vector3Int>> faces = new Dictionary<Vector3, List<Vector3Int>>(); 
-
+        public int LOD;
+        public bool empty = true;
         public Vector3[] vertexArray;
         public int[] triangleArray;
         public Color[] colorArray;
 
+        //3D chunk position relative to other chunks
+        public Vector3Int chunkCoord;
         //3D chunk position in world space
         public Vector3 chunkWorldPos;
         //Chunk world scale
@@ -590,21 +595,14 @@ public class TerrainChunk : MonoBehaviour
 
         //Saved chunk data object (contains dictionary of destroyed/placed blocks)
         public SavedChunkData savedData;
-        public ChunkData(Vector3 chunkWorldPos,  Vector3Int chunkSize, int byteArraySize, SavedChunkData savedData)
+        public ChunkData(Vector3Int chunkCoord, Vector3 chunkWorldPos,  Vector3Int chunkSize, int byteArraySize, SavedChunkData savedData)
         {
+            this.chunkCoord = chunkCoord;
             this.chunkWorldPos = chunkWorldPos;
             this.chunkSize = chunkSize;
             this.byteArr = new byte[byteArraySize];
             this.savedData = savedData;
-            foreach(Vector3 dir in CustomMath.directions)
-            {
-                List<Vector3Int> posList = new List<Vector3Int>();
-                faces.Add(dir, posList);
-            }
-        }
-        public void AddFace(Vector3 dir, Vector3Int pos)
-        {
-            this.faces[dir].Add(pos);
+
         }
         /// <summary>
         /// Get the byte value at the given byte array index
@@ -645,6 +643,10 @@ public class TerrainChunk : MonoBehaviour
         public void SetByteValue(int i, byte b)
         {
             this.byteArr[i] = b;
+            if(b != 0)
+            {
+                empty = false;
+            }
         }
         /// <summary>
         /// Resets the chunk data to default values
@@ -652,13 +654,6 @@ public class TerrainChunk : MonoBehaviour
         public void Reset()
         {
             jobComplete = false;
-            colors.Clear();
-            foreach(KeyValuePair<Vector3, List<Vector3Int>> entry in faces)
-            {
-                entry.Value.Clear();
-            }
-            vertices.Clear();
-            triangles.Clear();
         }
     }
     //Container class for storing saved chunk information (blocks placed/destroyed)
